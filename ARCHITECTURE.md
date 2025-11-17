@@ -113,3 +113,8 @@ elegram Bot及 httpx 实例。
 5. **关闭流程**（`lifespan` 退出）：
    - 关闭共享 `httpx.AsyncClient`。
    - `updater.stop()` → `bot_app.stop()` → `bot_app.shutdown()`，优雅停止 Telegram 轮询。
+##  Bot зƬϴ
+- ã `BOT_TOKEN`/`CHANNEL_NAME` Ϊ botͨ `EXTRA_BOTS`JSON ַ׷Ӹ `{"name","token","channel_name"}` ϣ`MULTIBOT_THRESHOLD_MB`Ĭ 10MBʱòС
+- ϴ`TelegramService`  `upload_file` аļС bot ѡԡʱԼ 8MB п鲢ѯͬ bot ϴȫɺ bot ϴ manifest ļ `manifest_data` д SQLite
+- أ`/d/{file_id}/{filename}` Ȳѯݿ⣬`strategy=multi_bot` ļ¼ʹ `stream_multi_bot_chunks`  manifest ԪƬȡӣ˳ɰ manifest ԭ߼
+- 嵥Ϣmanifest ıݾɸʽϴɺ caption `[MULTIPART UPLOAD COMPLETED]` ժҪֱӷʵ URL

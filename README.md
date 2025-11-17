@@ -153,3 +153,12 @@ docker run -d \
 1. 删除文件慢，群组内删除前端不会更新需要手动删除。
 
 用 roocode 和 白嫖的心 制作。****
+
+## 多 Bot 并行上传（可选）
+- 默认情况下仍使用单个 bot；通过 `.env` 中的 `EXTRA_BOTS`（JSON 字符串）可以追加更多 bot，例如：
+  ```json
+  EXTRA_BOTS=[{"name":"bot_b","token":"123:ABC","channel_name":"@my_channel_b"}]
+  ```
+- `MULTIBOT_THRESHOLD_MB` 控制触发阈值，文件大小超过该值且配置了 ≥2 个 bot 时会自动按 ~8MB 分片并行上传。
+- 上传完成后会在 Telegram 频道生成 manifest 消息，其 caption 包含 `[MULTIPART UPLOAD COMPLETED]` 摘要及下载 URL（`/d/{file_id}/{original_name}`），下载接口会根据数据库中的 manifest 元数据自动拼接所有分片。
+

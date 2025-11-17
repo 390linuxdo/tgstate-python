@@ -105,6 +105,7 @@ async def upload_file(
     else:
         raise HTTPException(status_code=500, detail="文件上传失败。")
 
+
 @router.get("/d/{file_id}/{filename}")
 async def download_file(
     file_id: str, # Note: This can be a composite ID "message_id:file_id"
@@ -116,7 +117,23 @@ async def download_file(
     处理文件下载。
     该函数实现了对清单文件和单个文件的真正流式处理，并确保文件名正确。
     """
-    # 从复合ID中提取真实的 file_id，同时保持对旧格式的兼容性
+    record = database.get_file_record(file_id)
+    manifest_info = None
+    if record and record.get("manifest_data"):
+        manifest_info = record["manifest_data"]
+
+    if manifest_info and manifest_info.get("strategy") == "multi_bot":
+        original_filename = manifest_info.get("original_filename") or filename
+        filename_encoded = quote(str(original_filename))
+        response_headers = {
+            'Content-Disposition': f"attachment; filename*=UTF-8''{filename_encoded}"
+        }
+        return StreamingResponse(
+            stream_multi_bot_chunks(manifest_info, telegram_service, client),
+            headers=response_headers
+        )
+
+    # 从复合ID中提取真实的 file_id，同时保持对旧格式的兼容
     try:
         _, real_file_id = file_id.split(':', 1)
     except ValueError:
@@ -133,54 +150,44 @@ async def download_file(
         head_resp.raise_for_status()
         first_bytes = head_resp.content
     except httpx.RequestError as e:
-        raise HTTPException(status_code=503, detail=f"无法连接到 Telegram 服务器: {e}")
+        raise HTTPException(status_code=503, detail=f"无法连接到Telegram 服务： {e}")
 
     # 检查是否是清单文件
-    if first_bytes.startswith(b'tgstate-blob\n'):
-        # 是清单文件，使用共享客户端下载整个清单来解析
+    if first_bytes.startswith(b'tgstate-blob'):
         manifest_resp = await client.get(download_url)
         manifest_resp.raise_for_status()
         manifest_content = manifest_resp.content
-        
-        lines = manifest_content.decode('utf-8').strip().split('\n')
+
+        lines = manifest_content.decode('utf-8').strip().split('')
         original_filename = lines[1]
         chunk_file_ids = lines[2:]
-        
+
         filename_encoded = quote(str(original_filename))
         response_headers = {
             'Content-Disposition': f"attachment; filename*=UTF-8''{filename_encoded}"
         }
-        # 将共享客户端传递给分块流式传输器
         return StreamingResponse(stream_chunks(chunk_file_ids, telegram_service, client), headers=response_headers)
     else:
-        # 是单个文件，直接流式传输
-        # 关键变更：文件名现在直接从URL参数中获取，不再需要数据库查询。
-
-        # 检查文件是否为图片
         image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
         is_image = filename.lower().endswith(image_extensions)
-        
+
         filename_encoded = quote(str(filename))
-        
-        # 动态获取 Content-Type
         content_type, _ = mimetypes.guess_type(filename)
         if content_type is None:
-            content_type = "application/octet-stream"  # 如果无法猜测，则使用默认值
+            content_type = "application/octet-stream"
 
-        # 根据是否为图片设置不同的 Content-Disposition
         disposition_type = "inline" if is_image else "attachment"
         response_headers = {
             'Content-Disposition': f"{disposition_type}; filename*=UTF-8''{filename_encoded}",
-            'Content-Type': content_type,  # 关键修复：添加 Content-Type 头
+            'Content-Type': content_type,
         }
 
         async def single_file_streamer():
-            # 使用共享客户端进行流式传输
             async with client.stream("GET", download_url) as resp:
                 resp.raise_for_status()
                 async for chunk in resp.aiter_bytes():
                     yield chunk
-        
+
         return StreamingResponse(single_file_streamer(), headers=response_headers)
 
 from .. import database
@@ -328,6 +335,33 @@ async def batch_delete_files(
         "deleted": successful_deletions,
         "failed": failed_deletions
     }
+
+
+
+async def stream_multi_bot_chunks(manifest_info, telegram_service: TelegramService, client: httpx.AsyncClient):
+    """一个使用 manifest 数据驱动的生成器，顺序输出多 bot 分片。"""
+    parts = manifest_info.get("parts") or []
+    sorted_parts = sorted(parts, key=lambda item: item.get("part_index", 0))
+
+    for part in sorted_parts:
+        bot_name = part.get("bot_name", "default")
+        actual_file_id = part.get("file_id")
+        if not actual_file_id:
+            continue
+
+        download_url = await telegram_service.get_download_url_for_bot(bot_name, actual_file_id)
+        if not download_url:
+            print(f"警告：无法通过 bot({bot_name}) 获取分片 {part.get('part_index')} 的下载链接，跳过。")
+            continue
+
+        try:
+            async with client.stream('GET', download_url) as chunk_resp:
+                chunk_resp.raise_for_status()
+                async for chunk_data in chunk_resp.aiter_bytes():
+                    yield chunk_data
+        except httpx.RequestError as exc:
+            print(f"流式传输分块 {part.get('part_index')} 时出现网络错误: {exc}")
+            break
 
 
 async def stream_chunks(chunk_composite_ids, telegram_service: TelegramService, client: httpx.AsyncClient):
